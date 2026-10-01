@@ -22,7 +22,6 @@ jobs:
         key: renew-state-${{ github.run_id }}
         restore-keys: |
           renew-state-
-
     - name: Setup Python
       uses: actions/setup-python@v6
       with:
@@ -34,7 +33,6 @@ jobs:
         sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
         pip install seleniumbase requests
         seleniumbase install chromedriver
-
     - name: Start Proxy (sing-box)
       env:
         PROXY_URL: ${{ secrets.PROXY_URL }}
@@ -56,23 +54,44 @@ jobs:
         nohup ./sing-box run -c config.json > singbox.log 2>&1 &
         # 二跳/单节点无需等 urltest；给 inbound 起来即可
         sleep 3
+    # [新增] 独立代理测试：无 PROXY_URL 时走直连探测，不再静默跳过
+    - name: Test Proxy Connectivity
+      env:
+        PROXY_URL: ${{ secrets.PROXY_URL }}
+      run: |
+        echo "=== Proxy connectivity test ==="
+
+        # 未配置代理 → 直连探测，作为对照基线
+        if [ -z "$PROXY_URL" ]; then
+          echo "PROXY_URL not set — testing direct connectivity instead."
+          DIRECT_IP=$(curl -sS -m 20 https://ipv4.icanhazip.com || true)
+          if [ -n "$DIRECT_IP" ]; then
+            echo "✅ direct OK, egress IP: $DIRECT_IP"
+          else
+            echo "⚠️ direct connectivity also failed (runner network issue?)"
+          fi
+          exit 0
+        fi
+
         echo "--- singbox.log ---"
         cat singbox.log || true
-        echo "--- health check ---"
+        echo ""
+        echo "--- process check ---"
         if ! pgrep -f "./sing-box" > /dev/null; then
           echo "❌ sing-box process not running"
           exit 1
         fi
         echo "✅ sing-box process alive"
         (command -v ss >/dev/null && ss -tlnp 2>/dev/null | grep 8080) || echo "(ss unavailable)"
+
+        echo ""
         echo "--- proxy connectivity test ---"
         # icanhazip：api.ip.sb / gstatic 在部分出口会被 RST，不等于隧道没通。
-        if curl -sS -m 20 -x http://127.0.0.1:8080 https://ipv4.icanhazip.com; then
-          echo ""
-          echo "  <- proxy OK"
+        if PROXY_IP=$(curl -sS -m 20 -x http://127.0.0.1:8080 https://ipv4.icanhazip.com); then
+          echo "✅ proxy OK, egress IP: $PROXY_IP"
+          echo "--- sing-box key logs ---"
           grep -iE "urltest|selected|node-|ERROR" singbox.log | tail -8 || true
         else
-          echo ""
           echo "❌ proxy connect FAILED — dialer/chain unreachable from this runner"
           echo "   The sing-box process is alive but PROXY_URL (and PROXY_CHAIN_URL if set) did not egress."
           echo "--- singbox.log after fail ---"
