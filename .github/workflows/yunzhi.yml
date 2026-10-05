@@ -1,0 +1,59 @@
+name: Yunzhi Checkin
+on:
+  schedule:
+    - cron: '10 1 * * *'   # UTC 01:10 = 北京 09:10
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Random delay
+        run: |
+          DELAY=$((RANDOM % 10800))
+          echo "⏳ 随机延迟 $((DELAY/60)) 分钟..."
+          sleep $DELAY
+
+      - uses: actions/checkout@v6
+        with:
+          repository: dengyie/awesome-skills
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install requests curl_cffi
+
+      - name: Run checkin
+        id: checkin
+        env:
+          YUNZHI_TOKEN: ${{ secrets.YUNZHI_TOKEN }}
+        run: |
+          set +e   # 签到失败也别让 step 崩掉，把退出码传给通知
+          python3 yunzhi-cloudphone-checkin/scripts/yunzhi_checkin.py --json > result.json 2> checkin.log
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "----- checkin.log -----"
+          cat checkin.log
+          echo "----- result.json -----"
+          cat result.json
+          exit $EXIT_CODE
+
+      - name: Bark notify (success or failure)
+        if: always()
+        env:
+          BARK_URL: ${{ secrets.BARK_URL }}      # 如 https://api.day.app/你的Key
+        run: |
+          TITLE="云智签到"
+          if [ "${{ steps.checkin.outputs.exit_code }}" = "0" ]; then
+            BODY="✅ 签到成功"
+          else
+            BODY="❌ 签到失败，请查看 Actions 日志"
+          fi
+          # 把 result.json 内容压缩成一行塞进推送（可选，失败时更有用）
+          DETAIL=$(python3 -c "import json,sys; d=json.load(open('result.json')); print(json.dumps(d, ensure_ascii=False)[:500])" 2>/dev/null || echo "")
+          [ -n "$DETAIL" ] && BODY="$BODY
+          $DETAIL"
+          curl -sS -m 15 "$BARK_URL/$TITLE/$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$BODY")" \
+            ?group=YunzhiCheckin&sound=bell
